@@ -1,0 +1,15 @@
+/*.txt
+/eldac
+/.vscode
+/src/*.o
+/src/edsacc
+/edsacc
+/edsacc.exe
+/src/edsacc.exe
+/.vs
+/Debug/
+/Release/
+/src/Debug/
+/src/Release/
+/src/EdsacC.vcxproj.user
+/vars.sh
