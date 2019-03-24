@@ -36,7 +36,7 @@ T assert_arg_range(int x, const char * name) {
 
 void arguments_t::init(int argn, const char ** args) {
     const char ** end = args + argn;
-    for (const char ** it = args; it != end; it++) {
+    for (const char ** it = args + 1; it != end; it++) {
         const char * curr = *it;
         if (!std::strncmp(curr, "--", 2)) {
             // full name conf
@@ -51,6 +51,8 @@ void arguments_t::init(int argn, const char ** args) {
                 output = get_arg_value(it, end);
             else if (is_arg_name(arg, "debug"))
                 debug = true;
+            else if (is_arg_name(arg, "help"))
+                help = true;
             else
                 throw std::invalid_argument("urecognized argument '" + std::string(arg) + "'");
         } else if (*curr == '-') {
@@ -63,6 +65,8 @@ void arguments_t::init(int argn, const char ** args) {
                     io = 2;
                 else if (c == 'd')
                     debug = true;
+                else if (c == 'h')
+                    help = true;
                 else
                     throw std::invalid_argument(std::string("unrecognized option '") + c + "'");
             }

@@ -543,7 +543,7 @@ int parser::parse(std::ostream & err) {
 	} catch (const std::exception & e) {
 		auto pair = count_lines(str, i);
 		err << "compilation error:" << pair.first << ":" << pair.second << ": " << e.what() << std::endl;
-		return 0;
+		return 1;
 	}
 	
 	try {
@@ -574,7 +574,7 @@ int parser::parse(std::ostream & err) {
 		}
 	} catch (const std::exception & e) {
 		err << "link time error: " << e.what() << std::endl;
-		return 0;
+		return 2;
 	}
 	return 0;
 }
