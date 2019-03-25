@@ -9,6 +9,7 @@
 #include <cctype>
 #include <cstring>
 #include <utility>
+#include <sstream>
 
 #include "arguments.hpp"
 
@@ -399,7 +400,7 @@ void const_predicate::resolve(const std::unordered_map<std::string, int> & vars)
 
 std::ostream & const_predicate::write_to(std::ostream & out) const {
 	if (arguments.debug)
-		out << "    [$ " << inst_address << "]";
+		out << "    [$ " << inst_address << "] ";
 	int k = 0;
 	for (const auto & i : inst) {
 		if (arguments.debug)
@@ -456,6 +457,7 @@ int parser::parse(std::ostream & err) {
 	edsac::err = &err;
 
 	std::vector<std::unique_ptr<predicate_t>> predicates;
+	std::unordered_map<std::string, std::string> defines;
 
 	std::string text( (std::istreambuf_iterator<char>(input)), (std::istreambuf_iterator<char>()) );
 	const char * str = text.c_str();
@@ -513,6 +515,56 @@ int parser::parse(std::ostream & err) {
 					i += parse_as_var(str + i, predicates);
 					skip_space(str, i);
 					i += parse_as_const(str + i, predicates);
+					continue;
+				}
+				case '~': {
+					// preprocessor
+					i++;
+					skip_space(str, i);
+					if (!std::strncmp(str + i, "io", 2) && std::isspace(str[i + 2])) {
+						i += 2;
+						skip_space(str, i);
+						int io;
+						i += read_int(str + i, io);
+						if (!std::isspace(str[i]))
+							throw std::runtime_error("integer number expected after ~io directive");
+						if (io > 2 || io < 1)
+							throw std::runtime_error("Initial Orders " + std::to_string(i) + " not supported (~io)");
+						if (!predicates.empty())
+							throw std::runtime_error("Can't switch between Initial Orders type inside a programm");
+						arguments.io = io;
+					} else if (!std::strncmp(str + i, "define", 6) && std::isspace(str[i + 6])) {
+						i += 6;
+						skip_space(str, i);
+						int sz = find_word_end(str + i);
+						std::string name = std::string(str + i, sz);
+						i += sz;
+						skip_space(str, i);
+						int j = i;
+						next_line(str, j);
+						int k = j;
+						for (j--; std::isspace(str[j]); j--);
+						j++;
+						std::string value = std::string(str + i, j - i);
+						std::stringstream stream(value);
+						std::string resolved_value;
+						while (stream) {
+							std::string word;
+							stream >> word;
+							auto iter = defines.find(word);
+							if (iter != defines.end())
+								resolved_value = iter->second + ' ';
+							else
+								resolved_value += word + ' ';
+						}
+						defines[name] = resolved_value;
+						// resolve defines for this new one
+						stream = std::stringstream(str + k);
+						while (stream) {
+							throw std::runtime_error("not implemented yet");
+						}
+					}
+					next_line(str, i);
 					continue;
 				}
 				case 'C': {
