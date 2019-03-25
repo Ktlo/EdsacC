@@ -706,7 +706,16 @@ int parser::parse(std::ostream & err) {
 						auto & layer = stack.back();
 						predicates.push_back(std::make_unique<inst_predicate>('T', tmp_name, s, false));
 						predicates.push_back(std::make_unique<inst_predicate>('E', std::get<1>(layer) + "#redo", s, false));
-						predicates.push_back(std::make_unique<inst_predicate>('G', std::get<1>(layer) + "#redo", s, false));
+						continue;
+					}
+				}
+				case 'b': {
+					if (!std::strncmp(str + i, "break", 5) && std::isspace(str[i + 5])) {
+						i += 5;
+						char s = arguments.io == 2 ? 'F' : 'S';
+						auto & layer = stack.back();
+						predicates.push_back(std::make_unique<inst_predicate>('T', tmp_name, s, false));
+						predicates.push_back(std::make_unique<inst_predicate>('E', std::get<1>(layer) + "#end", s, false));
 						continue;
 					}
 				}
