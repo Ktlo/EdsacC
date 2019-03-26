@@ -337,6 +337,7 @@ void ensure_tmp_created(std::vector<std::unique_ptr<predicate_t>> & predicates) 
 	if (is_tmp_not_created) {
 		predicates.push_back(std::make_unique<var_predicate>(tmp_name));
 		predicates.push_back(std::make_unique<inst_predicate>('P', 0, (arguments.io == 2) ? 'F' : 'S', false));
+		is_tmp_not_created = false;
 	}
 }
 
