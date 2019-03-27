@@ -471,8 +471,9 @@ int parse_as_const(const char * str,  std::vector<std::unique_ptr<predicate_t>> 
 				if (size < 0)
 					throw std::runtime_error("allocated number " + std::to_string(allocate) +
 						" lower than initializided " + std::to_string(inst.size()));
+				std::string zero = std::string("P") + ((arguments.io == 2) ? 'F' : 'S');
 				while (size--)
-					inst.push_back("PS");
+					inst.push_back(zero);
 			}
 		} else {
 			// integer literal
