@@ -83,7 +83,16 @@ int read_int(const char * str, int & value) {
 	return i;
 }
 
+static bool is_tmp_not_created = true;
+
 const std::string tmp_name = "edsacc#tmp";
+const std::string add_name = "edsacc#add";
+const std::string sub_name = "edsacc#sub";
+const std::string store_name = "edsacc#store";
+const std::string save_name = "edsacc#save";
+const std::string step_name = "STEP";
+
+void create_edsacc_vars(std::vector<std::unique_ptr<predicate_t>> & predicates);
 
 struct var_predicate final : public predicate_t {
 	std::string name;
@@ -137,9 +146,8 @@ struct command_predicate : public predicate_t {
 	bool is_long;
 	char suffics;
 	int inst_address;
-	int index;
 	command_predicate(char pre, const std::variant<std::string, int> & a, char post, bool l) :
-		prefix(pre), addr(a), suffics(post), is_long(l), index(0) {}
+		prefix(pre), addr(a), suffics(post), is_long(l) {}
 	virtual void resolve(const std::unordered_map<std::string, int> & vars) final override;
 	virtual std::ostream & write_to(std::ostream & out) const override;
 };
@@ -152,7 +160,7 @@ void command_predicate::resolve(const std::unordered_map<std::string, int> & var
 			throw std::runtime_error("no such variable '" + name + "'");
 		if (arguments.io == 2) {
 			int i = char_table.find_first_of(suffics, 17);
-			int a = iter->second + index;
+			int a = iter->second;
 			if (suffics == 'F' || suffics == 'K') {
 				// step 5
 			} else if (suffics == '@' || suffics == 'Z') {
@@ -167,7 +175,7 @@ void command_predicate::resolve(const std::unordered_map<std::string, int> & var
 					prefix + ' ' + iter->first + ' ' + suffics + "\"");
 			addr = a;
 		} else
-			addr = iter->second + index;
+			addr = iter->second;
 	}
 	if (prefix == 'G') {
 		if (suffics == 'K' || suffics == 'Z') {
@@ -202,11 +210,48 @@ struct direct_predicate final : public command_predicate {
 	virtual std::ostream & write_to(std::ostream & out) const override;
 };
 
+struct const_predicate final : public predicate_t {
+	std::vector<std::string> inst;
+	int inst_address;
+	const_predicate(const std::vector<std::string> && i) : inst(std::move(i)) {}
+	virtual int initialize(int inst_n, std::unordered_map<std::string, int> & vars) override;
+	virtual void resolve(const std::unordered_map<std::string, int> & vars) override;
+	virtual std::ostream & write_to(std::ostream & out) const override;
+};
+
+void write_integer(int value, char suffix, std::string & inst) {
+	int first = value >> 17;
+	bool is_long = suffix == 'l' || ((abs(value) >> 17) > 0 && suffix != 's');
+	int bitS = value & 1;
+	int bitL = first & 1;
+	first >>= 1;
+	value >>= 1;
+	if (arguments.io == 2) {
+		if (is_long)
+			inst += (char_table[(first >> 12) & 0b11111] + std::to_string(first & ((1 << 12) - 1)) +
+				(bitL ? 'D' : 'F'));
+		inst += (char_table[(value >> 12) & 0b11111] + std::to_string(value & ((1 << 12) - 1)) +
+			(bitS ? 'D' : 'F'));
+	} else {
+		if (is_long)
+			inst += (char_table[(first >> 12) & 0b11111] + std::to_string(first & ((1 << 12) - 1)) +
+				(bitL ? 'L' : 'S'));
+		inst += (char_table[(value >> 12) & 0b11111] + std::to_string(value & ((1 << 12) - 1)) +
+			(bitS ? 'L' : 'S'));
+	}
+}
+
 int parse_as_inst(const char * str, std::vector<std::unique_ptr<predicate_t>> & predicates) {
 	int i = 0;
+	int index = -1;
+	bool push_it = true;
 	char prefix = str[i++];
 	std::variant<std::string, int> addr;
-	int index_value = 0;
+	std::string name;
+	std::string indexer;
+	enum class type_t {
+		regular, index_name, index_static
+	} type = type_t::regular;
 	if (std::isspace(str[i]) || std::isdigit(str[i])) {
 		skip_space(str, i);
 		if (std::isdigit(str[i])) {
@@ -226,12 +271,12 @@ int parse_as_inst(const char * str, std::vector<std::unique_ptr<predicate_t>> & 
 			}
 			if (c == '[') {
 				// indexing a variable
-				std::string name = std::string(str + i, j);
+				name = std::string(str + i, j);
 				i += 1 + j;
 				skip_space(str, i);
 				if (std::isdigit(str[i])) {
 					// static offset
-					i += read_int(str + i, index_value);
+					i += read_int(str + i, index);
 					if (str[i] != ']' && !std::isspace(str[i]))
 						throw std::runtime_error(std::string("unexpected character in array index '") + str[i] + "'");
 					skip_space(str, i);
@@ -239,12 +284,14 @@ int parse_as_inst(const char * str, std::vector<std::unique_ptr<predicate_t>> & 
 						throw std::runtime_error("closing ']' expected in array index");
 					i++;
 					addr = name;
+					// index array by a static value
+					type = type_t::index_static;
 				} else if (str[i] == ']') {
 					throw std::runtime_error("empty array index brackets");
 				} else {
 					// named variable index
 					j = min(find_char(str + i, ']'), find_word_end(str + i));
-					std::string index = std::string(str + i, j);
+					indexer = std::string(str + i, j);
 					i += j;
 					skip_space(str, i);
 					if (str[i] != ']')
@@ -252,21 +299,10 @@ int parse_as_inst(const char * str, std::vector<std::unique_ptr<predicate_t>> & 
 					i++;
 					// insert index code block
 					char s = arguments.io == 2 ? 'F' : 'S';
-					if (prefix == 'A' || prefix == 'S' || prefix == 'T' || prefix == 'U') {
-						// get or set value
-						const char * op = prefix == 'A' ? "add" : (prefix == 'S' ? "sub" : (prefix == 'T' ? "store" : "save"));
-						predicates.push_back(std::make_unique<inst_predicate>('T', tmp_name, s, false));
-						predicates.push_back(std::make_unique<inst_predicate>('A', index, s, false));
-						predicates.push_back(std::make_unique<inst_predicate>('L', 0, arguments.io == 2 ? 'D' : 'L', false));
-						predicates.push_back(std::make_unique<inst_predicate>('A', name + '#' + op, s, false));
-						std::string var = name +"#mod#" + std::to_string(predicates.size());
-						predicates.push_back(std::make_unique<inst_predicate>('T', var, s, false));
-						predicates.push_back(std::make_unique<inst_predicate>('A', tmp_name, s, false));
-						predicates.push_back(std::make_unique<var_predicate>(var));
-						predicates.push_back(std::make_unique<inst_predicate>('P', 0, s, false));
-					} else
+					if (prefix == 'A' || prefix == 'S' || prefix == 'T' || prefix == 'U')
+						type = type_t::index_name;
+					else
 						throw std::runtime_error(std::string("operation '") + prefix + "' does not support indexing");
-					index_value = -1;
 				}
 			} else {
 				addr = std::string(str + i, sz);
@@ -282,14 +318,47 @@ int parse_as_inst(const char * str, std::vector<std::unique_ptr<predicate_t>> & 
 		i++;
 	}
 	char suffics = str[i++];
-	if (suffics == 'K' || suffics == 'Z') {
-		if (index_value)
-			throw std::runtime_error("directives don't support indexing");
-		predicates.push_back(std::make_unique<direct_predicate>(prefix, addr, suffics, is_long));
-	} else if (index_value != -1) {
-		std::unique_ptr<inst_predicate> ptr = std::make_unique<inst_predicate>(prefix, addr, suffics, is_long);
-		ptr->index = index_value;
-		predicates.push_back(std::move(ptr));
+	switch (type) {
+	case type_t::regular: {
+		if (arguments.io == 2 && (suffics == 'K' || suffics == 'Z'))
+			predicates.push_back(std::make_unique<direct_predicate>(prefix, addr, suffics, is_long));
+		else
+			predicates.push_back(std::make_unique<inst_predicate>(prefix, addr, suffics, is_long));
+		break;
+	}
+	case type_t::index_static:
+	case type_t::index_name: {
+		char s = arguments.io == 2 ? 'F' : 'S';
+		// get or set value;
+		if (is_long)
+			*err << "warning: long variables not supported in array indexing predicate" << std::endl;
+		predicates.push_back(std::make_unique<inst_predicate>('T', tmp_name, s, false));
+		predicates.push_back(std::make_unique<inst_predicate>('A', name, suffics, false));
+		if (type == type_t::index_static)
+			indexer = name + "#index#" + std::to_string(predicates.size());
+		predicates.push_back(std::make_unique<inst_predicate>('A', indexer, suffics, false));
+		predicates.push_back(std::make_unique<inst_predicate>('L', 0, arguments.io == 2 ? 'D' : 'L', false));
+		switch (prefix) {
+			case 'A': predicates.push_back(std::make_unique<inst_predicate>('A', add_name, s, false)); break;
+			case 'S': predicates.push_back(std::make_unique<inst_predicate>('A', sub_name, s, false)); break;
+			case 'T': predicates.push_back(std::make_unique<inst_predicate>('A', store_name, s, false)); break;
+			case 'U': predicates.push_back(std::make_unique<inst_predicate>('A', save_name, s, false)); break;
+		}
+		std::string var = name + "#mod#" + std::to_string(predicates.size());
+		predicates.push_back(std::make_unique<inst_predicate>('T', var, suffics, false));
+		predicates.push_back(std::make_unique<inst_predicate>('A', tmp_name, s, false));
+		if (type == type_t::index_static) {
+			predicates.push_back(std::make_unique<inst_predicate>('E', var, suffics, false));
+			predicates.push_back(std::make_unique<inst_predicate>('G', var, suffics, false));
+			predicates.push_back(std::make_unique<var_predicate>(indexer));
+			std::string value;
+			write_integer(index, 's', value);
+			predicates.push_back(std::make_unique<const_predicate>(std::vector<std::string>{ value }));
+		}
+		predicates.push_back(std::make_unique<var_predicate>(var));
+		predicates.push_back(std::make_unique<inst_predicate>('P', 0, s, false));
+		break;
+	}
 	}
 	return i;
 }
@@ -322,53 +391,44 @@ std::ostream & direct_predicate::write_to(std::ostream & out) const {
 	return out;
 }
 
-struct const_predicate final : public predicate_t {
-	std::vector<std::string> inst;
+struct ptr_predicate final : public predicate_t {
+	std::string var;
 	int inst_address;
-	const_predicate(const std::vector<std::string> && i) : inst(std::move(i)) {}
-	virtual int initialize(int inst_n, std::unordered_map<std::string, int> & vars) override;
-	virtual void resolve(const std::unordered_map<std::string, int> & vars) override;
-	virtual std::ostream & write_to(std::ostream & out) const override;
-};
-
-static bool is_tmp_not_created = true;
-
-void ensure_tmp_created(std::vector<std::unique_ptr<predicate_t>> & predicates) {
-	if (is_tmp_not_created) {
-		predicates.push_back(std::make_unique<var_predicate>(tmp_name));
-		predicates.push_back(std::make_unique<inst_predicate>('P', 0, (arguments.io == 2) ? 'F' : 'S', false));
-		is_tmp_not_created = false;
+	int first_element;
+	ptr_predicate(const std::string & name) : var(name) {}
+	virtual int initialize(int inst_n, std::unordered_map<std::string, int> & vars) override {
+		vars[var] = inst_n;
+		inst_address = inst_n;
+		return inst_n + 1;
 	}
-}
+	virtual void resolve(const std::unordered_map<std::string, int> & vars) override {
+		auto iter = vars.find(var);
+		if (iter == vars.end())
+			throw std::runtime_error("FATAL: KTLO IS A BAG?!");
+		first_element = iter->second + 1;
+	}
+	virtual std::ostream & write_to(std::ostream & out) const override {
+		if (arguments.debug)
+			out << "    [^ " << inst_address << "]";
+		std::string inst;
+		write_integer(first_element, 's', inst);
+		out << inst;
+		if (arguments.debug)
+			out << std::endl;
+		return out;
+	}
+};
 
 int parse_as_const(const char * str,  std::vector<std::unique_ptr<predicate_t>> & predicates) {
 	int i = 0;
 	std::vector<std::string> inst;
-	auto write_integer = [&](int value, char suffix) {
-		int first = value >> 17;
-		bool is_long = suffix == 'l' || ((abs(value) >> 17) > 0 && suffix != 's');
-		int bitS = value & 1;
-		int bitL = first & 1;
-		first >>= 1;
-		value >>= 1;
-		if (arguments.io == 2) {
-			if (is_long)
-				inst.push_back(char_table[(first >> 12) & 0b11111] + std::to_string(first & ((1 << 12) - 1)) +
-					(bitL ? 'D' : 'F'));
-			inst.push_back(char_table[(value >> 12) & 0b11111] + std::to_string(value & ((1 << 12) - 1)) +
-				(bitS ? 'D' : 'F'));
-		} else {
-			if (is_long)
-				inst.push_back(char_table[(first >> 12) & 0b11111] + std::to_string(first & ((1 << 12) - 1)) +
-					(bitL ? 'L' : 'S'));
-			inst.push_back(char_table[(value >> 12) & 0b11111] + std::to_string(value & ((1 << 12) - 1)) +
-				(bitS ? 'L' : 'S'));
-		}
-	};
 	if (str[i] == '=') {
 		i++;
 		skip_space(str, i);
 		if (str[i] == '[' || str[i] == '{') {
+			const var_predicate & var = dynamic_cast<const var_predicate &>(*predicates.back());
+			// add array ptr first
+			predicates.push_back(std::make_unique<ptr_predicate>(var.name));
 			// array literal
 			int allocate = -1;
 			if (str[i] == '[') {
@@ -392,7 +452,9 @@ int parse_as_const(const char * str,  std::vector<std::unique_ptr<predicate_t>> 
 					char c = str[i];
 					if (c != 's' && c != 'l' && c != ',' && c != '}' && !std::isspace(c))
 						throw std::runtime_error(std::string("unexpected character in array initialization block '") + c + "'");
-					write_integer(value, c);
+					std::string next;
+					write_integer(value, c, next);
+					inst.push_back(next);
 					if (c == 's' || c == 'l') i++;
 					skip_space(str, i);
 					if (i == j)
@@ -412,47 +474,6 @@ int parse_as_const(const char * str,  std::vector<std::unique_ptr<predicate_t>> 
 				while (size--)
 					inst.push_back("PS");
 			}
-			skip_space(str, i);
-			char c = str[i];
-			static const std::string modifiers = "asturw";
-			if (int(modifiers.find_first_of(c)) >= 0) {
-				// Add variables for indexing and storing
-				const var_predicate & var = dynamic_cast<const var_predicate &>(*predicates.back());
-				predicates.push_back(std::make_unique<const_predicate>(std::move(inst)));
-				ensure_tmp_created(predicates);
-				int sz = find_word_end(str + i);
-				char suffics = (arguments.io == 2) ? 'F' : 'S';
-				for (; sz--; i++) {
-					c = str[i];
-					switch (c) {
-						case 'a':
-						case 'r':
-							// create add op for array
-							predicates.push_back(std::make_unique<var_predicate>(var.name + "#add"));
-							predicates.push_back(std::make_unique<inst_predicate>('A', var.name, suffics, false));
-							break;
-						case 's':
-							// create sub op for array
-							predicates.push_back(std::make_unique<var_predicate>(var.name + "#sub"));
-							predicates.push_back(std::make_unique<inst_predicate>('S', var.name, suffics, false));
-							break;
-						case 't':
-						case 'w':
-							// create store op for array
-							predicates.push_back(std::make_unique<var_predicate>(var.name + "#store"));
-							predicates.push_back(std::make_unique<inst_predicate>('T', var.name, suffics, false));
-							break;
-						case 'u':
-							// create save op for array
-							predicates.push_back(std::make_unique<var_predicate>(var.name + "#save"));
-							predicates.push_back(std::make_unique<inst_predicate>('U', var.name, suffics, false));
-							break;
-						default:
-							throw std::runtime_error(std::string("this operation is not supported for array (op code '") + c + "')");
-					}
-				}
-				return i;
-			}
 		} else {
 			// integer literal
 			int const_sz = find_word_end(str + i);
@@ -462,9 +483,11 @@ int parse_as_const(const char * str,  std::vector<std::unique_ptr<predicate_t>> 
 			char c = str[i];
 			if (i + !std::isspace(c) != j)
 				throw std::runtime_error(std::string("unexpected character in constant literal '") + c + "'");
-			if (c == 's' || c == 'l' || std::isspace(c))
-				write_integer(value, c);
-			else
+			if (c == 's' || c == 'l' || std::isspace(c)) {
+				std::string str_inst;
+				write_integer(value, c, str_inst);
+				inst.push_back(str_inst);
+			} else
 				throw std::runtime_error("not implemented constant type");
 			i = j;
 		}
@@ -552,6 +575,27 @@ inline void next_line(const char * str, int & i) {
 	if (str[i] == '\n') i++;
 }
 
+void create_edsacc_vars(std::vector<std::unique_ptr<predicate_t>> & predicates) {
+	char s = (arguments.io == 2) ? 'F' : 'S';
+	if (is_tmp_not_created) {
+		predicates.push_back(std::make_unique<var_predicate>(tmp_name));
+		predicates.push_back(std::make_unique<inst_predicate>('P', 0, s, false));
+		predicates.push_back(std::make_unique<var_predicate>(add_name));
+		predicates.push_back(std::make_unique<inst_predicate>('A', 0, s, false));
+		predicates.push_back(std::make_unique<var_predicate>(sub_name));
+		predicates.push_back(std::make_unique<inst_predicate>('S', 0, s, false));
+		predicates.push_back(std::make_unique<var_predicate>(store_name));
+		predicates.push_back(std::make_unique<inst_predicate>('T', 0, s, false));
+		predicates.push_back(std::make_unique<var_predicate>(save_name));
+		predicates.push_back(std::make_unique<inst_predicate>('U', 0, s, false));
+		predicates.push_back(std::make_unique<var_predicate>(step_name));
+		predicates.push_back(std::make_unique<const_predicate>(std::vector<std::string>{
+			std::string("P") + ((arguments.io == 2) ? 'D' : 'L')
+		}));
+		is_tmp_not_created = false;
+	}
+}
+
 const std::string inst_list = "ASHVNTUCRLEGIOFXYZ" "P";
 
 enum class layer_t {
@@ -631,7 +675,14 @@ int parser::parse(std::ostream & err) {
 						char s = arguments.io == 2 ? 'F' : 'S';
 						bool create_var = str[i] == '$';
 						if (create_var) i++;
-						int sz = min(min(find_word_end(str + i), find_char(str + i, ',')),find_char(str + i, '='));
+						int sz = find_word_end(str + i);
+						for (int k = 0; k < sz; k++) {
+							char c = str[i + k];
+							if (c == ',' || c == '=') {
+								sz = k;
+								break;
+							}
+						}
 						if (sz == 0)
 							throw std::runtime_error("new variable name is empty");
 						std::string var = std::string(str + i, sz);
@@ -769,6 +820,10 @@ int parser::parse(std::ostream & err) {
 						if (!predicates.empty())
 							throw std::runtime_error("Can't switch between Initial Orders type inside a programm");
 						arguments.io = io;
+					} else if (!std::strncmp(str + i, "use_special_vars", 16) && std::isspace(str[i + 16])) {
+						i += 16;
+						next_line(str, i);
+						create_edsacc_vars(predicates);
 					} else if (!std::strncmp(str + i, "define", 6) && std::isspace(str[i + 6])) {
 						i += 6;
 						skip_space(str, i);
