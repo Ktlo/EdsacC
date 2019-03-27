@@ -822,7 +822,6 @@ int parser::parse(std::ostream & err) {
 						arguments.io = io;
 					} else if (!std::strncmp(str + i, "use_special_vars", 16) && std::isspace(str[i + 16])) {
 						i += 16;
-						next_line(str, i);
 						create_edsacc_vars(predicates);
 					} else if (!std::strncmp(str + i, "define", 6) && std::isspace(str[i + 6])) {
 						i += 6;
@@ -854,7 +853,8 @@ int parser::parse(std::ostream & err) {
 						while (stream) {
 							throw std::runtime_error("not implemented yet");
 						}
-					}
+					} else
+						throw std::runtime_error("no such preprocessor directive in edsacc");
 					next_line(str, i);
 					continue;
 				}
