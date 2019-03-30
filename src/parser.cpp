@@ -96,7 +96,8 @@ void create_edsacc_vars(std::vector<std::unique_ptr<predicate_t>> & predicates);
 
 struct var_predicate final : public predicate_t {
 	std::string name;
-	var_predicate(const std::string & n) : name(n) {};
+	unsigned char kostil;
+	var_predicate(const std::string & n) : name(n), kostil(0) {};
 	virtual int initialize(int inst_n, std::unordered_map<std::string, int> & vars) override;
 	virtual void resolve(const std::unordered_map<std::string, int> & vars) override;
 	virtual std::ostream & write_to(std::ostream & out) const override;
@@ -125,7 +126,7 @@ int parse_as_var(const char * str, std::vector<std::unique_ptr<predicate_t>> & p
 int var_predicate::initialize(int inst_n, std::unordered_map<std::string, int> & vars) {
 	if (vars.find(name) != vars.end())
 		throw std::runtime_error("variable '" + name + "' already exists");
-	vars[name] = inst_n;
+	vars[name] = inst_n + kostil;
 	return inst_n;
 }
 
@@ -212,14 +213,15 @@ struct direct_predicate final : public command_predicate {
 
 struct const_predicate final : public predicate_t {
 	std::vector<std::string> inst;
+	int count;
 	int inst_address;
-	const_predicate(const std::vector<std::string> && i) : inst(std::move(i)) {}
+	const_predicate(const std::vector<std::string> && i, int c) : inst(std::move(i)), count(c) {}
 	virtual int initialize(int inst_n, std::unordered_map<std::string, int> & vars) override;
 	virtual void resolve(const std::unordered_map<std::string, int> & vars) override;
 	virtual std::ostream & write_to(std::ostream & out) const override;
 };
 
-void write_integer(int value, char suffix, std::string & inst) {
+int write_integer(int value, char suffix, std::string & inst) {
 	int first = value >> 17;
 	bool is_long = suffix == 'l' || ((abs(value) >> 17) > 0 && suffix != 's');
 	int bitS = value & 1;
@@ -239,6 +241,7 @@ void write_integer(int value, char suffix, std::string & inst) {
 		inst += (char_table[(value >> 12) & 0b11111] + std::to_string(value & ((1 << 12) - 1)) +
 			(bitS ? 'L' : 'S'));
 	}
+	return 1 + is_long;
 }
 
 int parse_as_inst(const char * str, std::vector<std::unique_ptr<predicate_t>> & predicates) {
@@ -353,7 +356,7 @@ int parse_as_inst(const char * str, std::vector<std::unique_ptr<predicate_t>> & 
 			predicates.push_back(std::make_unique<var_predicate>(indexer));
 			std::string value;
 			write_integer(index, 's', value);
-			predicates.push_back(std::make_unique<const_predicate>(std::vector<std::string>{ value }));
+			predicates.push_back(std::make_unique<const_predicate>(std::vector<std::string>{ value }, 1));
 		}
 		predicates.push_back(std::make_unique<var_predicate>(var));
 		predicates.push_back(std::make_unique<inst_predicate>('P', 0, s, false));
@@ -421,6 +424,7 @@ struct ptr_predicate final : public predicate_t {
 
 int parse_as_const(const char * str,  std::vector<std::unique_ptr<predicate_t>> & predicates) {
 	int i = 0;
+	int count = 0;
 	std::vector<std::string> inst;
 	if (str[i] == '=') {
 		i++;
@@ -453,7 +457,7 @@ int parse_as_const(const char * str,  std::vector<std::unique_ptr<predicate_t>> 
 					if (c != 's' && c != 'l' && c != ',' && c != '}' && !std::isspace(c))
 						throw std::runtime_error(std::string("unexpected character in array initialization block '") + c + "'");
 					std::string next;
-					write_integer(value, c, next);
+					count += write_integer(value, c, next);
 					inst.push_back(next);
 					if (c == 's' || c == 'l') i++;
 					skip_space(str, i);
@@ -467,11 +471,12 @@ int parse_as_const(const char * str,  std::vector<std::unique_ptr<predicate_t>> 
 				i++;
 			}
 			if (allocate >= 0) {
-				int size = allocate - inst.size();
+				int size = allocate - count;
 				if (size < 0)
 					throw std::runtime_error("allocated number " + std::to_string(allocate) +
-						" lower than initializided " + std::to_string(inst.size()));
+						" lower than initializided " + std::to_string(count));
 				std::string zero = std::string("P") + ((arguments.io == 2) ? 'F' : 'S');
+				count += size;
 				while (size--)
 					inst.push_back(zero);
 			}
@@ -486,7 +491,12 @@ int parse_as_const(const char * str,  std::vector<std::unique_ptr<predicate_t>> 
 				throw std::runtime_error(std::string("unexpected character in constant literal '") + c + "'");
 			if (c == 's' || c == 'l' || std::isspace(c)) {
 				std::string str_inst;
-				write_integer(value, c, str_inst);
+				int t = write_integer(value, c, str_inst);
+				if (t == 2) {
+					var_predicate & var = dynamic_cast<var_predicate &>(*predicates.back());
+					var.kostil = 1;
+				}
+				count += t;
 				inst.push_back(str_inst);
 			} else
 				throw std::runtime_error("not implemented constant type");
@@ -494,6 +504,7 @@ int parse_as_const(const char * str,  std::vector<std::unique_ptr<predicate_t>> 
 		}
 	} else if(!std::strncmp(str + i, "CONST(", 6)) {
 		i += 5;
+		count = 1;
 		int value;
 		int j = i + find_last_bracket(str + i);
 		i++;
@@ -511,13 +522,13 @@ int parse_as_const(const char * str,  std::vector<std::unique_ptr<predicate_t>> 
 		i++;
 	} else
 		throw std::invalid_argument("FATAL OTHER BUGS!!! " + std::string(str + i, 10));
-	predicates.push_back(std::make_unique<const_predicate>(std::move(inst)));
+	predicates.push_back(std::make_unique<const_predicate>(std::move(inst), count));
 	return i;
 }
 
 int const_predicate::initialize(int inst_n, std::unordered_map<std::string, int> & vars) {
 	inst_address = inst_n;
-	return inst_n + inst.size();
+	return inst_n + count;
 }
 
 void const_predicate::resolve(const std::unordered_map<std::string, int> & vars) {}
@@ -592,7 +603,7 @@ void create_edsacc_vars(std::vector<std::unique_ptr<predicate_t>> & predicates) 
 		predicates.push_back(std::make_unique<var_predicate>(step_name));
 		predicates.push_back(std::make_unique<const_predicate>(std::vector<std::string>{
 			std::string("P") + ((arguments.io == 2) ? 'D' : 'L')
-		}));
+		}, 1));
 		is_tmp_not_created = false;
 	}
 }
@@ -694,7 +705,7 @@ int parser::parse(std::ostream & err) {
 							predicates.push_back(std::make_unique<inst_predicate>('E', point, s, false));
 							predicates.push_back(std::make_unique<inst_predicate>('G', point, s, false));
 							predicates.push_back(std::make_unique<var_predicate>(var));
-							predicates.push_back(std::make_unique<const_predicate>(std::vector<std::string> { std::string("P") + s } ));
+							predicates.push_back(std::make_unique<const_predicate>(std::vector<std::string> { std::string("P") + s }, 1 ));
 							predicates.push_back(std::make_unique<var_predicate>(point));
 						}
 						skip_space(str, i);
@@ -717,7 +728,7 @@ int parser::parse(std::ostream & err) {
 							predicates.push_back(std::make_unique<inst_predicate>('G', point, s, false));
 							std::string const_val = "for#const#" + std::to_string(predicates.size());
 							predicates.push_back(std::make_unique<var_predicate>(const_val));
-							predicates.push_back(std::make_unique<const_predicate>(std::vector<std::string>{ inst }));
+							predicates.push_back(std::make_unique<const_predicate>(std::vector<std::string>{ inst }, 1));
 							predicates.push_back(std::make_unique<var_predicate>(point));
 							// initialize with const
 							predicates.push_back(std::make_unique<inst_predicate>('T', tmp_name, s, false));
