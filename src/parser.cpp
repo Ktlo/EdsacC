@@ -96,8 +96,7 @@ void create_edsacc_vars(std::vector<std::unique_ptr<predicate_t>> & predicates);
 
 struct var_predicate final : public predicate_t {
 	std::string name;
-	unsigned char kostil;
-	var_predicate(const std::string & n) : name(n), kostil(0) {};
+	var_predicate(const std::string & n) : name(n) {};
 	virtual int initialize(int inst_n, std::unordered_map<std::string, int> & vars) override;
 	virtual void resolve(const std::unordered_map<std::string, int> & vars) override;
 	virtual std::ostream & write_to(std::ostream & out) const override;
@@ -126,7 +125,7 @@ int parse_as_var(const char * str, std::vector<std::unique_ptr<predicate_t>> & p
 int var_predicate::initialize(int inst_n, std::unordered_map<std::string, int> & vars) {
 	if (vars.find(name) != vars.end())
 		throw std::runtime_error("variable '" + name + "' already exists");
-	vars[name] = inst_n + kostil;
+	vars[name] = inst_n;
 	return inst_n;
 }
 
@@ -229,17 +228,17 @@ int write_integer(int value, char suffix, std::string & inst) {
 	first >>= 1;
 	value >>= 1;
 	if (arguments.io == 2) {
-		if (is_long)
-			inst += (char_table[(first >> 12) & 0b11111] + std::to_string(first & ((1 << 12) - 1)) +
-				(bitL ? 'D' : 'F'));
-		inst += (char_table[(value >> 12) & 0b11111] + std::to_string(value & ((1 << 12) - 1)) +
+		inst += (char_table[(value >> 11) & 0b11111] + std::to_string(value & ((1 << 11) - 1)) +
 			(bitS ? 'D' : 'F'));
-	} else {
 		if (is_long)
-			inst += (char_table[(first >> 12) & 0b11111] + std::to_string(first & ((1 << 12) - 1)) +
-				(bitL ? 'L' : 'S'));
-		inst += (char_table[(value >> 12) & 0b11111] + std::to_string(value & ((1 << 12) - 1)) +
+			inst += (char_table[(first >> 11) & 0b11111] + std::to_string(first & ((1 << 11) - 1)) +
+				(bitL ? 'D' : 'F'));
+	} else {
+		inst += (char_table[(value >> 11) & 0b11111] + std::to_string(value & ((1 << 11) - 1)) +
 			(bitS ? 'L' : 'S'));
+		if (is_long)
+			inst += (char_table[(first >> 11) & 0b11111] + std::to_string(first & ((1 << 11) - 1)) +
+				(bitL ? 'L' : 'S'));
 	}
 	return 1 + is_long;
 }
@@ -491,12 +490,7 @@ int parse_as_const(const char * str,  std::vector<std::unique_ptr<predicate_t>> 
 				throw std::runtime_error(std::string("unexpected character in constant literal '") + c + "'");
 			if (c == 's' || c == 'l' || std::isspace(c)) {
 				std::string str_inst;
-				int t = write_integer(value, c, str_inst);
-				if (t == 2) {
-					var_predicate & var = dynamic_cast<var_predicate &>(*predicates.back());
-					var.kostil = 1;
-				}
-				count += t;
+				count += write_integer(value, c, str_inst);
 				inst.push_back(str_inst);
 			} else
 				throw std::runtime_error("not implemented constant type");
@@ -718,8 +712,8 @@ int parser::parse(std::ostream & err) {
 							i += read_int(str + i, value);
 							bool bit = value & 1;
 							value >>= 1;
-							std::string inst = char_table[value >> 12] + std::to_string(value) +
-								((arguments.io == 2) ? (bit ? 'D' : 'F') : (bit ? 'L' : 'S'));
+							std::string inst;
+							write_integer(value, 's', inst);
 							if (!std::isspace(str[i]) && str[i] != ',')
 								throw std::runtime_error("unexpected symbol in for loop initialisation");
 							// create const
